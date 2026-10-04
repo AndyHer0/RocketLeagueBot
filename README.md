@@ -84,8 +84,8 @@ The bot's agent ID is `andy/firstbot/v0.1`. The `bot.toml` config file must use 
 - [x] Choose framework and language (RLBot v5, Java)
 - [x] Set up Maven project with the RLBot dependency
 - [x] Add example bot code (drive toward the ball)
-- [ ] Create `bot.toml` and run the bot in a match
-- [ ] Push to GitHub
+- [x] Create `bot.toml` and run the bot in a match
+- [x] Push to GitHub
 - [ ] Shoot toward the opponent's goal instead of just hitting the ball
 - [ ] Basic defense: return to own goal when the ball is on our side
 - [ ] Boost management
