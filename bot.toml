@@ -1,0 +1,15 @@
+[settings]
+agent_id = "andy/firstbot/v0.1"     # must equal the ID in Main.java
+name = "FirstBot"                   # name shown in the GUI and in-game
+loadout_file = ""                   # optional car colors/decals file (none for now)
+run_command = ""                    # empty = start Main.java yourself from IntelliJ
+run_command_linux = ""
+logo_file = ""                      # optional 400x300 PNG
+
+[details]                           # these only affect what the GUI shows
+description = "A hand-coded Java bot that drives at the ball. Work in progress."
+fun_fact = "Steers using atan2 and a lot of hope."
+source_link = ""                    # your GitHub URL once it's pushed
+developer = "Andy"
+language = "Java"
+tags = ["1v1"]
