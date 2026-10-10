@@ -258,32 +258,21 @@ public class ExampleBot implements Bot {
         }
 
         // 4. Pick where to drive. "hold" means: once close to the spot, wait there facing the ball.
-        float targetX;
-        float targetY;
-        boolean hold = false;
-        switch (mode) {
-            case KICKOFF -> {
-                targetX = ball.x();
-                targetY = ball.y();
-            }
+        boolean canSaveByHitting = goingIn != null && ours.time() < goingIn.time();
+        boolean hold = mode == Mode.SHADOW || (mode == Mode.SAVE && !canSaveByHitting);
+        Vec3 target = switch (mode) {
+            case KICKOFF -> ball.flat();
             case SAVE -> {
-                if (goingIn != null && ours.time() < goingIn.time()) {
-                    // We can reach it before it goes in: hit it, from the goal side we're already on
-                    targetX = ours.ball().x();
-                    targetY = ours.ball().y();
-                } else {
-                    // Stand on the goal line where the ball (or their shot) will cross
-                    float crossX = goingIn != null ? goingIn.ball().x() : shotX;
-                    targetX = clamp(crossX, -GOAL_HALF_WIDTH + 100, GOAL_HALF_WIDTH - 100);
-                    targetY = ownGoalY - SAVE_DEPTH * side;
-                    hold = true;
-                }
+                // We can reach it before it goes in: hit it, from the goal side we're already on
+                if (canSaveByHitting) yield ours.ball().flat();
+                // Otherwise stand on the goal line where the ball (or their shot) will cross
+                float crossX = goingIn != null ? goingIn.ball().x() : shotX;
+                yield new Vec3(clamp(crossX, -GOAL_HALF_WIDTH + 100, GOAL_HALF_WIDTH - 100),
+                        ownGoalY - SAVE_DEPTH * side, 0);
             }
-            case RETREAT -> {
-                // Head to the post on our side of the ball so we don't drive through it
-                targetX = (car.x() >= ball.x()) ? RETREAT_POST_X : -RETREAT_POST_X;
-                targetY = ownGoalY - RETREAT_DEPTH * side;
-            }
+            // Head to the post on our side of the ball so we don't drive through it
+            case RETREAT -> new Vec3(car.x() >= ball.x() ? RETREAT_POST_X : -RETREAT_POST_X,
+                    ownGoalY - RETREAT_DEPTH * side, 0);
             case ATTACK -> {
                 // Shooting: aim at a point behind where we'll meet the ball, on the line from the
                 // enemy goal through it. Hitting the ball from there sends it toward their goal.
@@ -291,59 +280,41 @@ public class ExampleBot implements Bot {
                 Vec3 toGoal = enemyGoal.sub(hit).flat().normalized();
                 // Back off further when we're far away; shrink to 0 as we get close
                 float offset = Math.min(hit.sub(car).length() * SHOT_OFFSET_RATIO, SHOT_OFFSET_MAX);
-                targetX = hit.x() - toGoal.x() * offset;
-                targetY = hit.y() - toGoal.y() * offset;
+                yield hit.sub(toGoal.scale(offset)).flat();
             }
-            case DRIBBLE -> {
-                // Steer at a point past the ball toward their goal, so we turn the dribble goalward
-                Vec3 toGoal = enemyGoal.sub(ball).flat().normalized();
-                targetX = ball.x() + toGoal.x() * DRIBBLE_STEER_LEAD;
-                targetY = ball.y() + toGoal.y() * DRIBBLE_STEER_LEAD;
-            }
-            case CHALLENGE -> {
-                // We're goal-side and it's close: drive straight at where we'll meet the ball to block them
-                targetX = ours.ball().x();
-                targetY = ours.ball().y();
-            }
-            case GET_BOOST -> {
-                targetX = bigPad.x();
-                targetY = bigPad.y();
-            }
-            default -> { // SHADOW
-                // Sit between the ball and our goal, a set distance back, and match their pace
-                Vec3 toOwnGoal = new Vec3(0, ownGoalY, 0).sub(ball).flat().normalized();
-                targetX = ball.x() + toOwnGoal.x() * SHADOW_DISTANCE;
-                targetY = ball.y() + toOwnGoal.y() * SHADOW_DISTANCE;
-                // Never shadow from inside the goal
-                if (targetY * side > GOAL_Y - SAVE_DEPTH) targetY = (GOAL_Y - SAVE_DEPTH) * side;
-                hold = true;
-            }
-        }
+            // Steer at a point past the ball toward their goal, so we turn the dribble goalward
+            case DRIBBLE -> ball.add(enemyGoal.sub(ball).flat().normalized().scale(DRIBBLE_STEER_LEAD)).flat();
+            // We're goal-side and it's close: drive straight at where we'll meet the ball to block them
+            case CHALLENGE -> ours.ball().flat();
+            case GET_BOOST -> bigPad.flat();
+            // Sit between the ball and our goal, a set distance back, and match their pace
+            // (the field clamp below keeps it out of the goal)
+            case SHADOW -> ball.add(new Vec3(0, ownGoalY, 0).sub(ball).flat().normalized()
+                    .scale(SHADOW_DISTANCE)).flat();
+        };
         if (mode != Mode.KICKOFF) {
             // Keep the target inside the field
-            targetX = clamp(targetX, -FIELD_X + 200, FIELD_X - 200);
-            targetY = clamp(targetY, -GOAL_Y + 200, GOAL_Y - 200);
+            target = new Vec3(clamp(target.x(), -FIELD_X + 200, FIELD_X - 200),
+                    clamp(target.y(), -GOAL_Y + 200, GOAL_Y - 200), 0);
         }
-        float distToTarget = distance(car.x(), car.y(), 0, targetX, targetY, 0);
+        float distToTarget = target.sub(car.flat()).length();
 
         // Boost management: on longer trips, swing through a pad if it's close to our path
         boolean padsOk = mode == Mode.ATTACK || mode == Mode.SHADOW || mode == Mode.RETREAT;
         if (padsOk && boost < PAD_TOP_UP && distToTarget > PAD_MIN_TRIP
                 && !(hold && distToTarget < HOLD_DISTANCE)) {
-            Vec3 pad = findPadOnPath(packet, car, new Vec3(targetX, targetY, 0));
+            Vec3 pad = findPadOnPath(packet, car, target);
             if (pad != null) {
-                targetX = pad.x();
-                targetY = pad.y();
-                distToTarget = distance(car.x(), car.y(), 0, targetX, targetY, 0);
+                target = pad;
+                distToTarget = target.sub(car.flat()).length();
             }
         }
-        Vec3 target = new Vec3(targetX, targetY, 0);
 
         // 5. Drive there
         float angle;
         if (mode == Mode.DRIBBLE) {
             // Keep the ball balanced: match its speed, and nudge it back to just in front of center
-            angle = steerToward(controller, player, targetX, targetY);
+            angle = steerToward(controller, player, target.x(), target.y());
             controller.setSteer(controller.getSteer() * DRIBBLE_STEER_SCALE);
             float ahead = ballRel.dot(forward);
             float speedDiff = ballVel.dot(forward) - forwardSpeed;
@@ -357,13 +328,12 @@ public class ExampleBot implements Bot {
         } else if (hold && distToTarget < HOLD_DISTANCE) {
             // Close to our spot: face the ball and creep forward/back to stay on the spot
             angle = steerToward(controller, player, ball.x(), ball.y());
-            Vec3 toTarget = new Vec3(targetX - car.x(), targetY - car.y(), 0);
-            float throttle = clamp(forward.dot(toTarget) / 300, -1, 1);
+            float throttle = clamp(forward.dot(target.sub(car.flat())) / 300, -1, 1);
             controller.setThrottle(throttle);
             // Steering works backwards in reverse, so flip it to keep turning toward the ball
             if (throttle < 0) controller.setSteer(-controller.getSteer());
         } else {
-            angle = steerToward(controller, player, targetX, targetY);
+            angle = steerToward(controller, player, target.x(), target.y());
         }
 
         if (mode == Mode.KICKOFF) {
@@ -462,16 +432,12 @@ public class ExampleBot implements Bot {
     }
 
     // Rough guess at how long a car needs to drive to a spot: time to turn + time to drive there
-    private float travelTime(PlayerInfoT p, Vec3 target) {
-        Vec3 loc = Vec3.of(p.getPhysics().getLocation());
-        Vec3 vel = Vec3.of(p.getPhysics().getVelocity());
+    // (loc, vel, forward and maxSpeed are passed in so callers can work them out once per car)
+    private static float travelTime(Vec3 loc, Vec3 vel, Vec3 forward, float maxSpeed, Vec3 target) {
         Vec3 toTarget = target.sub(loc).flat();
         float dist = Math.max(toTarget.length() - HIT_DISTANCE, 0);
         Vec3 dir = toTarget.normalized();
-
-        Vec3 forward = Vec3.forward(p.getPhysics().getRotation()).flat().normalized();
         float turnAngle = (float) Math.acos(clamp(forward.dot(dir), -1, 1));
-        float maxSpeed = p.getBoost() > 10 ? MAX_SPEED : MAX_DRIVE_SPEED;
         // Average of the speed we have toward it now and the top speed we'll reach
         float avgSpeed = clamp((vel.dot(dir) + maxSpeed) / 2, 500, maxSpeed);
         return turnAngle * TURN_TIME_PER_RADIAN + dist / avgSpeed;
@@ -479,6 +445,10 @@ public class ExampleBot implements Bot {
 
     // Walks the ball prediction to find the first moment this car can drive to the ball
     private Intercept findIntercept(PlayerInfoT p, BallPredictionT prediction, Vec3 ballNow, float now) {
+        Vec3 loc = Vec3.of(p.getPhysics().getLocation());
+        Vec3 vel = Vec3.of(p.getPhysics().getVelocity());
+        Vec3 forward = Vec3.forward(p.getPhysics().getRotation()).flat().normalized();
+        float maxSpeed = p.getBoost() > 10 ? MAX_SPEED : MAX_DRIVE_SPEED;
         Vec3 last = ballNow;
         float lastTime = 0;
         if (prediction != null && prediction.getSlices() != null) {
@@ -490,11 +460,11 @@ public class ExampleBot implements Bot {
                 last = b;
                 lastTime = t;
                 if (b.z() > GROUND_HIT_MAX_HEIGHT) continue;
-                if (travelTime(p, b) <= t) return new Intercept(t, b);
+                if (travelTime(loc, vel, forward, maxSpeed, b) <= t) return new Intercept(t, b);
             }
         }
         // Can't catch it within the prediction: guess using where it ends up
-        return new Intercept(Math.max(travelTime(p, last), lastTime), last);
+        return new Intercept(Math.max(travelTime(loc, vel, forward, maxSpeed, last), lastTime), last);
     }
 
     // If the ball is predicted to roll into our goal, returns when and where. Otherwise null.
@@ -571,9 +541,7 @@ public class ExampleBot implements Bot {
         var curYaw = player.getPhysics().getRotation().getYaw();
         var desiredYaw = (float) Math.atan2(y - carLoc.getY(), x - carLoc.getX());
         // How far we need to turn, wrapped into -PI..PI so we turn the short way
-        float angle = desiredYaw - curYaw;
-        while (angle > PI) angle -= 2 * PI;
-        while (angle < -PI) angle += 2 * PI;
+        float angle = wrapAngle(desiredYaw - curYaw);
         // Steer harder the further off we are
         controller.setSteer(clamp(angle * STEER_GAIN, -1, 1));
         return angle;
@@ -703,12 +671,13 @@ public class ExampleBot implements Bot {
         // because "roof up" doesn't mean anything then.
         float rollErr = Math.abs(forward.z()) < 0.9f ? (float) Math.atan2(right.z(), up.z()) : 0;
 
-        // How fast each error is changing (0 on the first tick of a new turn)
+        // How fast each error is changing (0 on the first tick of a new turn). The change is wrapped
+        // so an error crossing +-PI (target directly behind) doesn't look like a huge spin.
         float dt = now - lastOrientTime;
         boolean fresh = lastOrientTime == -1 || dt <= 0 || dt > 0.1f;
-        float pitchRate = fresh ? 0 : clamp((pitchErr - lastPitchErr) / dt, -10, 10);
-        float yawRate = fresh ? 0 : clamp((yawErr - lastYawErr) / dt, -10, 10);
-        float rollRate = fresh ? 0 : clamp((rollErr - lastRollErr) / dt, -10, 10);
+        float pitchRate = fresh ? 0 : clamp(wrapAngle(pitchErr - lastPitchErr) / dt, -10, 10);
+        float yawRate = fresh ? 0 : clamp(wrapAngle(yawErr - lastYawErr) / dt, -10, 10);
+        float rollRate = fresh ? 0 : clamp(wrapAngle(rollErr - lastRollErr) / dt, -10, 10);
 
         controller.setPitch(clamp(PITCH_P * pitchErr + PITCH_D * pitchRate, -1, 1));
         controller.setYaw(clamp(YAW_P * yawErr + YAW_D * yawRate, -1, 1));
@@ -720,11 +689,9 @@ public class ExampleBot implements Bot {
         lastOrientTime = now;
     }
 
-    private static float distance(float x1, float y1, float z1, float x2, float y2, float z2) {
-        float dx = x2 - x1;
-        float dy = y2 - y1;
-        float dz = z2 - z1;
-        return (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
+    // Wraps an angle into -PI..PI
+    private static float wrapAngle(float angle) {
+        return (float) Math.IEEEremainder(angle, 2 * PI);
     }
 
     private static float clamp(float value, float min, float max) {
